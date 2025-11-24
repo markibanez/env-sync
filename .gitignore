@@ -1,3 +1,23 @@
+# Go binaries
+env-sync
+env-sync.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test binaries
+*.test
+
+# Go coverage output
+*.out
+
+# Go dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
 # Logs
 logs
 *.log
