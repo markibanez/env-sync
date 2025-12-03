@@ -59,6 +59,7 @@ func main() {
 		password := syncCmd.String("password", "", "Encryption password (required)")
 		basePath := syncCmd.String("base", "", "Base path for relative paths (default: current directory)")
 		dryRun := syncCmd.Bool("dry-run", false, "Show what would be synced without making changes")
+		numWorkers := syncCmd.Int("workers", 10, "Number of parallel workers (default: 10)")
 
 		syncCmd.Parse(os.Args[2:])
 
@@ -77,7 +78,7 @@ func main() {
 			*basePath = cwd
 		}
 
-		if err := syncEnvFiles(*dbConnStr, *password, *basePath, *dryRun); err != nil {
+		if err := syncEnvFiles(*dbConnStr, *password, *basePath, *dryRun, *numWorkers); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -135,6 +136,7 @@ func printUsage() {
 	fmt.Println("    --password <pwd>       Encryption password")
 	fmt.Println("    --base <path>          Base path for relative paths (default: current dir)")
 	fmt.Println("    --dry-run              Show what would be synced without making changes")
+	fmt.Println("    --workers <n>          Number of parallel workers (default: 10)")
 	fmt.Println("  upload                   Upload scanned .env files to database (encrypted)")
 	fmt.Println("    --db <conn-string>     Database connection string")
 	fmt.Println("    --password <pwd>       Encryption password")
