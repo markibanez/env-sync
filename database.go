@@ -50,18 +50,23 @@ func (db *Database) Close() error {
 
 // InitSchema creates the env_files table if it doesn't exist
 func (db *Database) InitSchema() error {
-	// SQLite/LibSQL compatible schema (works with both LibSQL and PostgreSQL)
+	// Check if we need to migrate from old schema
+	if err := db.migrateSchema(); err != nil {
+		// Migration failed or not needed, continue with creation
+	}
+
+	// New schema using repo_id (git remote URL) instead of path
 	query := `
 	CREATE TABLE IF NOT EXISTS env_files (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		path TEXT NOT NULL,
-		filename TEXT NOT NULL,
+		repo_id TEXT NOT NULL,
+		relative_path TEXT NOT NULL,
 		contents TEXT NOT NULL,
 		file_hash TEXT NOT NULL,
 		file_modified_at DATETIME NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(path, filename)
+		UNIQUE(repo_id, relative_path)
 	);
 	`
 
@@ -70,8 +75,8 @@ func (db *Database) InitSchema() error {
 		return fmt.Errorf("failed to create table: %v", err)
 	}
 
-	// Create index separately (some databases don't support IF NOT EXISTS on indexes in CREATE TABLE)
-	indexQuery := `CREATE INDEX IF NOT EXISTS idx_env_files_path ON env_files(path);`
+	// Create index on repo_id for faster lookups
+	indexQuery := `CREATE INDEX IF NOT EXISTS idx_env_files_repo_id ON env_files(repo_id);`
 	_, err = db.conn.Exec(indexQuery)
 	if err != nil {
 		// Index might already exist, log but don't fail
@@ -81,13 +86,66 @@ func (db *Database) InitSchema() error {
 	return nil
 }
 
+// migrateSchema handles migration from old schema (path-based) to new schema (repo_id-based)
+func (db *Database) migrateSchema() error {
+	// Check if old table exists with 'path' column
+	var tableName string
+	err := db.conn.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='env_files'`).Scan(&tableName)
+	if err != nil {
+		// Table doesn't exist, no migration needed
+		return nil
+	}
+
+	// Check if it has the old 'path' column
+	rows, err := db.conn.Query(`PRAGMA table_info(env_files)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	hasPathColumn := false
+	hasRepoIdColumn := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue interface{}
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			continue
+		}
+		if name == "path" {
+			hasPathColumn = true
+		}
+		if name == "repo_id" {
+			hasRepoIdColumn = true
+		}
+	}
+
+	if hasRepoIdColumn {
+		// Already migrated
+		return nil
+	}
+
+	if hasPathColumn {
+		// Need to migrate: drop old table (data will be lost, but it's encrypted with old paths anyway)
+		fmt.Println("Migrating database schema to new git-based format...")
+		fmt.Println("Note: Existing entries will be removed. Please re-sync after migration.")
+		_, err := db.conn.Exec(`DROP TABLE env_files`)
+		if err != nil {
+			return fmt.Errorf("failed to drop old table: %v", err)
+		}
+	}
+
+	return nil
+}
+
 // UpsertEnvFile inserts or updates an env file record
-func (db *Database) UpsertEnvFile(path, filename, encryptedContents, fileHash, fileModTime string) error {
+func (db *Database) UpsertEnvFile(repoID, relativePath, encryptedContents, fileHash, fileModTime string) error {
 	// Use SQLite/LibSQL compatible upsert syntax
 	query := `
-	INSERT INTO env_files (path, filename, contents, file_hash, file_modified_at, updated_at)
+	INSERT INTO env_files (repo_id, relative_path, contents, file_hash, file_modified_at, updated_at)
 	VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	ON CONFLICT (path, filename)
+	ON CONFLICT (repo_id, relative_path)
 	DO UPDATE SET
 		contents = excluded.contents,
 		file_hash = excluded.file_hash,
@@ -95,7 +153,7 @@ func (db *Database) UpsertEnvFile(path, filename, encryptedContents, fileHash, f
 		updated_at = CURRENT_TIMESTAMP
 	`
 
-	_, err := db.conn.Exec(query, path, filename, encryptedContents, fileHash, fileModTime)
+	_, err := db.conn.Exec(query, repoID, relativePath, encryptedContents, fileHash, fileModTime)
 	if err != nil {
 		return fmt.Errorf("failed to upsert env file: %v", err)
 	}
@@ -103,14 +161,14 @@ func (db *Database) UpsertEnvFile(path, filename, encryptedContents, fileHash, f
 	return nil
 }
 
-// GetEnvFile retrieves an env file by path and filename
-func (db *Database) GetEnvFile(path, filename string) (string, error) {
+// GetEnvFile retrieves an env file by repo_id and relative_path
+func (db *Database) GetEnvFile(repoID, relativePath string) (string, error) {
 	var contents string
-	query := `SELECT contents FROM env_files WHERE path = ? AND filename = ?`
+	query := `SELECT contents FROM env_files WHERE repo_id = ? AND relative_path = ?`
 
-	err := db.conn.QueryRow(query, path, filename).Scan(&contents)
+	err := db.conn.QueryRow(query, repoID, relativePath).Scan(&contents)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("env file not found: %s/%s", path, filename)
+		return "", fmt.Errorf("env file not found: %s:%s", repoID, relativePath)
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to query env file: %v", err)
@@ -120,11 +178,11 @@ func (db *Database) GetEnvFile(path, filename string) (string, error) {
 }
 
 // GetEnvFileWithMetadata retrieves an env file with its metadata
-func (db *Database) GetEnvFileWithMetadata(path, filename string) (*EnvFileRecord, error) {
+func (db *Database) GetEnvFileWithMetadata(repoID, relativePath string) (*EnvFileRecord, error) {
 	var record EnvFileRecord
-	query := `SELECT path, filename, contents, file_hash, file_modified_at, created_at, updated_at FROM env_files WHERE path = ? AND filename = ?`
+	query := `SELECT repo_id, relative_path, contents, file_hash, file_modified_at, created_at, updated_at FROM env_files WHERE repo_id = ? AND relative_path = ?`
 
-	err := db.conn.QueryRow(query, path, filename).Scan(&record.Path, &record.Filename, &record.Contents, &record.FileHash, &record.FileModifiedAt, &record.CreatedAt, &record.UpdatedAt)
+	err := db.conn.QueryRow(query, repoID, relativePath).Scan(&record.RepoID, &record.RelativePath, &record.Contents, &record.FileHash, &record.FileModifiedAt, &record.CreatedAt, &record.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil // Not found
 	}
@@ -137,7 +195,7 @@ func (db *Database) GetEnvFileWithMetadata(path, filename string) (*EnvFileRecor
 
 // ListEnvFiles returns all env files in the database
 func (db *Database) ListEnvFiles() ([]EnvFileRecord, error) {
-	query := `SELECT path, filename, file_hash, file_modified_at, created_at, updated_at FROM env_files ORDER BY path, filename`
+	query := `SELECT repo_id, relative_path, file_hash, file_modified_at, created_at, updated_at FROM env_files ORDER BY repo_id, relative_path`
 
 	rows, err := db.conn.Query(query)
 	if err != nil {
@@ -148,7 +206,7 @@ func (db *Database) ListEnvFiles() ([]EnvFileRecord, error) {
 	var records []EnvFileRecord
 	for rows.Next() {
 		var record EnvFileRecord
-		if err := rows.Scan(&record.Path, &record.Filename, &record.FileHash, &record.FileModifiedAt, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		if err := rows.Scan(&record.RepoID, &record.RelativePath, &record.FileHash, &record.FileModifiedAt, &record.CreatedAt, &record.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %v", err)
 		}
 		records = append(records, record)
@@ -158,8 +216,8 @@ func (db *Database) ListEnvFiles() ([]EnvFileRecord, error) {
 }
 
 type EnvFileRecord struct {
-	Path           string
-	Filename       string
+	RepoID         string
+	RelativePath   string
 	Contents       string
 	FileHash       string
 	FileModifiedAt string
@@ -208,14 +266,12 @@ func (db *Database) UploadEnvFiles(files []string, basePath, password string) er
 			continue
 		}
 
-		// Get relative path
-		relDir, err := getFileDirectory(file, basePath)
+		// Get git-based identifier or fallback to relative path
+		repoID, relativePath, err := GetFileIdentifier(file, basePath)
 		if err != nil {
-			fmt.Printf("Warning: failed to get relative path for %s: %v\n", file, err)
+			fmt.Printf("Warning: failed to get identifier for %s: %v\n", file, err)
 			continue
 		}
-
-		filename := filepath.Base(file)
 
 		// Get file modification time
 		fileInfo, err := os.Stat(file)
@@ -229,13 +285,26 @@ func (db *Database) UploadEnvFiles(files []string, basePath, password string) er
 		fileHash := HashFile(string(contents))
 
 		// Upload to database
-		if err := db.UpsertEnvFile(relDir, filename, encryptedContents, fileHash, fileModTime); err != nil {
+		if err := db.UpsertEnvFile(repoID, relativePath, encryptedContents, fileHash, fileModTime); err != nil {
 			fmt.Printf("Warning: failed to upload %s: %v\n", file, err)
 			continue
 		}
 
-		fmt.Printf("✓ Uploaded: %s/%s\n", relDir, filename)
+		fmt.Printf("✓ Uploaded: %s → %s\n", relativePath, shortenRepoID(repoID))
 	}
 
 	return nil
+}
+
+// shortenRepoID returns a shortened version of repo ID for display
+func shortenRepoID(repoID string) string {
+	if repoID == "__local__" {
+		return "[local]"
+	}
+	// Show just the repo name part (e.g., "github.com/user/repo" -> "user/repo")
+	parts := strings.Split(repoID, "/")
+	if len(parts) >= 3 {
+		return strings.Join(parts[1:], "/")
+	}
+	return repoID
 }

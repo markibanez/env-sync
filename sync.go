@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -72,13 +71,13 @@ func syncEnvFiles(dbConnStr, password, basePath string, dryRun bool) error {
 }
 
 func syncFile(db *Database, filePath, basePath, password string, stats *SyncStats, dryRun bool) error {
-	// Get relative path
-	relDir, err := getFileDirectory(filePath, basePath)
+	// Get git-based identifier or fallback to relative path
+	repoID, relativePath, err := GetFileIdentifier(filePath, basePath)
 	if err != nil {
-		return fmt.Errorf("failed to get relative path: %v", err)
+		return fmt.Errorf("failed to get file identifier: %v", err)
 	}
 
-	filename := filepath.Base(filePath)
+	displayName := fmt.Sprintf("%s (%s)", relativePath, shortenRepoID(repoID))
 
 	// Get local file info
 	localInfo, err := os.Stat(filePath)
@@ -95,7 +94,7 @@ func syncFile(db *Database, filePath, basePath, password string, stats *SyncStat
 	localHash := HashFile(string(localContents))
 
 	// Check if file exists in database
-	dbRecord, err := db.GetEnvFileWithMetadata(relDir, filename)
+	dbRecord, err := db.GetEnvFileWithMetadata(repoID, relativePath)
 	if err != nil {
 		return fmt.Errorf("failed to check database: %v", err)
 	}
@@ -103,11 +102,11 @@ func syncFile(db *Database, filePath, basePath, password string, stats *SyncStat
 	if dbRecord == nil {
 		// File doesn't exist in DB, upload it
 		if !dryRun {
-			if err := uploadFile(db, filePath, relDir, filename, basePath, password, localModTime, localHash); err != nil {
+			if err := uploadFile(db, filePath, repoID, relativePath, password, localModTime, localHash); err != nil {
 				return err
 			}
 		}
-		fmt.Printf("↑ Uploaded: %s/%s (new)%s\n", relDir, filename, dryRunSuffix(dryRun))
+		fmt.Printf("↑ Uploaded: %s (new)%s\n", displayName, dryRunSuffix(dryRun))
 		stats.FilesUploaded++
 		return nil
 	}
@@ -115,7 +114,7 @@ func syncFile(db *Database, filePath, basePath, password string, stats *SyncStat
 	// Compare file hashes first (most reliable)
 	if localHash == dbRecord.FileHash {
 		// Files are identical, skip
-		fmt.Printf("= Skipped: %s/%s (identical)\n", relDir, filename)
+		fmt.Printf("= Skipped: %s (identical)\n", displayName)
 		stats.FilesSkipped++
 		return nil
 	}
@@ -137,11 +136,11 @@ func syncFile(db *Database, filePath, basePath, password string, stats *SyncStat
 	if timeDiff > 1 {
 		// Local file is newer, upload to database
 		if !dryRun {
-			if err := uploadFile(db, filePath, relDir, filename, basePath, password, localModTime, localHash); err != nil {
+			if err := uploadFile(db, filePath, repoID, relativePath, password, localModTime, localHash); err != nil {
 				return err
 			}
 		}
-		fmt.Printf("↑ Uploaded: %s/%s (local newer)%s\n", relDir, filename, dryRunSuffix(dryRun))
+		fmt.Printf("↑ Uploaded: %s (local newer)%s\n", displayName, dryRunSuffix(dryRun))
 		stats.FilesUploaded++
 	} else if timeDiff < -1 {
 		// Database file is newer, download from database
@@ -150,17 +149,17 @@ func syncFile(db *Database, filePath, basePath, password string, stats *SyncStat
 				return err
 			}
 		}
-		fmt.Printf("↓ Downloaded: %s/%s (remote newer)%s\n", relDir, filename, dryRunSuffix(dryRun))
+		fmt.Printf("↓ Downloaded: %s (remote newer)%s\n", displayName, dryRunSuffix(dryRun))
 		stats.FilesDownloaded++
 	} else {
 		// Timestamps are similar but hashes differ - this is a conflict
 		// Default to uploading local (prefer local changes)
 		if !dryRun {
-			if err := uploadFile(db, filePath, relDir, filename, basePath, password, localModTime, localHash); err != nil {
+			if err := uploadFile(db, filePath, repoID, relativePath, password, localModTime, localHash); err != nil {
 				return err
 			}
 		}
-		fmt.Printf("↑ Uploaded: %s/%s (content changed, timestamps similar)%s\n", relDir, filename, dryRunSuffix(dryRun))
+		fmt.Printf("↑ Uploaded: %s (content changed, timestamps similar)%s\n", displayName, dryRunSuffix(dryRun))
 		stats.FilesUploaded++
 	}
 
@@ -174,7 +173,7 @@ func dryRunSuffix(dryRun bool) string {
 	return ""
 }
 
-func uploadFile(db *Database, filePath, relDir, filename, basePath, password string, modTime time.Time, fileHash string) error {
+func uploadFile(db *Database, filePath, repoID, relativePath, password string, modTime time.Time, fileHash string) error {
 	// Read file contents
 	contents, err := os.ReadFile(filePath)
 	if err != nil {
@@ -191,7 +190,7 @@ func uploadFile(db *Database, filePath, relDir, filename, basePath, password str
 	fileModTime := modTime.Format("2006-01-02 15:04:05")
 
 	// Upload to database
-	if err := db.UpsertEnvFile(relDir, filename, encryptedContents, fileHash, fileModTime); err != nil {
+	if err := db.UpsertEnvFile(repoID, relativePath, encryptedContents, fileHash, fileModTime); err != nil {
 		return fmt.Errorf("failed to upload: %v", err)
 	}
 

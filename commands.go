@@ -64,23 +64,34 @@ func downloadEnvFiles(dbConnStr, password, outputPath string) error {
 
 	for _, record := range records {
 		// Get encrypted contents
-		encryptedContents, err := db.GetEnvFile(record.Path, record.Filename)
+		encryptedContents, err := db.GetEnvFile(record.RepoID, record.RelativePath)
 		if err != nil {
-			fmt.Printf("Warning: failed to get %s/%s: %v\n", record.Path, record.Filename, err)
+			fmt.Printf("Warning: failed to get %s:%s: %v\n", record.RepoID, record.RelativePath, err)
 			continue
 		}
 
 		// Decrypt contents
 		contents, err := Decrypt(encryptedContents, password)
 		if err != nil {
-			fmt.Printf("Warning: failed to decrypt %s/%s: %v (wrong password?)\n", record.Path, record.Filename, err)
+			fmt.Printf("Warning: failed to decrypt %s:%s: %v (wrong password?)\n", record.RepoID, record.RelativePath, err)
 			continue
 		}
 
-		// Create output path
-		// Convert Unix-style path back to OS-specific path
-		relPath := strings.TrimPrefix(record.Path, "./")
-		fullDir := filepath.Join(outputPath, filepath.FromSlash(relPath))
+		// Create output path based on repo ID
+		// For git repos, use shortened repo name; for local, use relative path
+		var fullDir string
+		if record.RepoID == "__local__" {
+			fullDir = filepath.Join(outputPath, filepath.Dir(filepath.FromSlash(record.RelativePath)))
+		} else {
+			// Use repo name as folder (e.g., "github.com/user/repo" -> "user_repo")
+			repoFolder := strings.ReplaceAll(record.RepoID, "/", "_")
+			relDir := filepath.Dir(record.RelativePath)
+			if relDir == "." {
+				fullDir = filepath.Join(outputPath, repoFolder)
+			} else {
+				fullDir = filepath.Join(outputPath, repoFolder, filepath.FromSlash(relDir))
+			}
+		}
 
 		// Create directory if it doesn't exist
 		if err := os.MkdirAll(fullDir, 0755); err != nil {
@@ -89,7 +100,8 @@ func downloadEnvFiles(dbConnStr, password, outputPath string) error {
 		}
 
 		// Write file
-		fullPath := filepath.Join(fullDir, record.Filename)
+		filename := filepath.Base(record.RelativePath)
+		fullPath := filepath.Join(fullDir, filename)
 		if err := os.WriteFile(fullPath, []byte(contents), 0644); err != nil {
 			fmt.Printf("Warning: failed to write %s: %v\n", fullPath, err)
 			continue
