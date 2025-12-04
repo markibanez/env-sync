@@ -8,13 +8,38 @@ import (
 )
 
 func scanForEnvFiles(rootPath string) error {
+	files, err := scanForEnvFilesQuiet(rootPath)
+	if err != nil {
+		return err
+	}
+
+	if len(files) == 0 {
+		fmt.Println("No .env files found")
+		return nil
+	}
+
+	// Save the found files
+	if err := saveEnvFiles(files); err != nil {
+		return fmt.Errorf("error saving env files: %v", err)
+	}
+
+	fmt.Printf("Found and saved %d .env file(s):\n", len(files))
+	for _, file := range files {
+		fmt.Printf("  - %s\n", file)
+	}
+
+	return nil
+}
+
+// scanForEnvFilesQuiet scans for env files without printing output
+func scanForEnvFilesQuiet(rootPath string) ([]string, error) {
 	// Verify the path exists
 	info, err := os.Stat(rootPath)
 	if err != nil {
-		return fmt.Errorf("path does not exist: %s", rootPath)
+		return nil, fmt.Errorf("path does not exist: %s", rootPath)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("path is not a directory: %s", rootPath)
+		return nil, fmt.Errorf("path is not a directory: %s", rootPath)
 	}
 
 	var envFiles []string
@@ -49,23 +74,8 @@ func scanForEnvFiles(rootPath string) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("error scanning directory: %v", err)
+		return nil, fmt.Errorf("error scanning directory: %v", err)
 	}
 
-	if len(envFiles) == 0 {
-		fmt.Println("No .env files found")
-		return nil
-	}
-
-	// Save the found files
-	if err := saveEnvFiles(envFiles); err != nil {
-		return fmt.Errorf("error saving env files: %v", err)
-	}
-
-	fmt.Printf("Found and saved %d .env file(s):\n", len(envFiles))
-	for _, file := range envFiles {
-		fmt.Printf("  - %s\n", file)
-	}
-
-	return nil
+	return envFiles, nil
 }

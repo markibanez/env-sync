@@ -25,14 +25,14 @@ type syncResult struct {
 func syncEnvFiles(dbConnStr, password, basePath string, dryRun bool, numWorkers int) error {
 	startTime := time.Now()
 
-	// Load scanned env files
-	files, err := loadEnvFiles()
+	// Auto-scan basePath for env files
+	files, err := scanForEnvFilesQuiet(basePath)
 	if err != nil {
-		return fmt.Errorf("failed to load env files: %v", err)
+		return fmt.Errorf("failed to scan for env files: %v", err)
 	}
 
 	if len(files) == 0 {
-		return fmt.Errorf("no env files found. Run 'env-sync scan <path>' first")
+		return fmt.Errorf("no env files found in %s", basePath)
 	}
 
 	// Connect to database

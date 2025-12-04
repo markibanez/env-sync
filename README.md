@@ -217,6 +217,101 @@ env-sync list
 
 ---
 
+### `daemon`
+Run as a background daemon that syncs automatically at a specified interval.
+
+```bash
+env-sync daemon \
+  --db "libsql://db-name.turso.io?authToken=..." \
+  --password "encryption-password" \
+  --base "/path/to/projects" \
+  --interval 1h \
+  --workers 10
+```
+
+**Flags:**
+- `--db` - Database connection string (required)
+- `--password` - Encryption password (required)
+- `--base` - Base path for relative paths (default: current directory)
+- `--interval` - Sync interval (default: 1h). Supports Go duration format: `30m`, `1h`, `2h30m`
+- `--workers` - Number of parallel workers (default: 10)
+
+**Features:**
+- Runs initial sync immediately on startup
+- Continues syncing at the specified interval
+- Graceful shutdown with Ctrl+C or SIGTERM
+- No popup windows (unlike scheduled tasks)
+- Logs each sync with timestamps
+
+**Example Output:**
+```
+env-sync daemon starting...
+  Database: libsql://your-db.turso.io...
+  Base path: D:\Github
+  Interval: 1h0m0s
+  Workers: 10
+
+[2024-01-15 10:00:00] Running initial sync...
+Syncing 59 .env file(s) with 10 workers...
+  Uploaded: 3, Downloaded: 1, Skipped: 55
+[2024-01-15 10:00:02] Sync complete. Next sync in 1h0m0s. Press Ctrl+C to stop.
+
+[2024-01-15 11:00:02] Running scheduled sync...
+Syncing 59 .env file(s) with 10 workers...
+  Uploaded: 0, Downloaded: 2, Skipped: 57
+[2024-01-15 11:00:04] Sync complete. Next sync in 1h0m0s. Press Ctrl+C to stop.
+```
+
+**Running as a Windows Service:**
+
+For true invisible background operation on Windows, use NSSM (Non-Sucking Service Manager):
+
+```powershell
+# Download NSSM from https://nssm.cc/download
+# Install as a service
+nssm install env-sync "C:\path\to\env-sync.exe" "daemon --db \"libsql://...\" --password \"...\" --base \"D:\Github\" --interval 1h"
+
+# Start the service
+nssm start env-sync
+
+# Check status
+nssm status env-sync
+
+# Remove service
+nssm remove env-sync
+```
+
+**Running on macOS/Linux with systemd:**
+
+```bash
+# Create service file
+sudo nano /etc/systemd/system/env-sync.service
+```
+
+```ini
+[Unit]
+Description=env-sync daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/env-sync daemon --db "libsql://..." --password "..." --base "/home/user/Projects" --interval 1h
+Restart=always
+User=youruser
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# Enable and start
+sudo systemctl enable env-sync
+sudo systemctl start env-sync
+sudo systemctl status env-sync
+```
+
+---
+
 ## Database Setup
 
 ### Turso/LibSQL (Recommended)
@@ -305,9 +400,29 @@ GOOS=linux GOARCH=amd64 go build -o env-sync-linux
 
 ## Automated Sync (Recommended)
 
-For seamless multi-machine development, set up automated syncing with cron (macOS/Linux) or Task Scheduler (Windows) to run `env-sync sync` periodically. This ensures your environment files stay in sync across all your machines without manual intervention.
+For seamless multi-machine development, set up automated syncing:
 
-Run it every hour, every 30 minutes, or on system login—whatever fits your workflow.
+### Option 1: Daemon Mode (Recommended)
+
+Run the built-in daemon for true background operation with no popup windows:
+
+```bash
+# Run in background
+env-sync daemon \
+  --db "libsql://db-name.turso.io?authToken=..." \
+  --password "encryption-password" \
+  --base "D:\Github" \
+  --interval 1h
+
+# For Windows, install as a service with NSSM (see daemon command docs)
+# For Linux/macOS, use systemd (see daemon command docs)
+```
+
+### Option 2: System Scheduler
+
+Use cron (macOS/Linux) or Task Scheduler (Windows) to run `env-sync sync` periodically.
+
+Run it every hour, every 30 minutes, or on system login.
 
 ---
 
